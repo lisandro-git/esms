@@ -1,6 +1,9 @@
 [package]
 name = "server"
 version = "0.1.0"
-authors = ["tensor-programming <abeltensor@tensor-programming.com>"]
+edition = "2018"
+authors = ["edode"]
 
 [dependencies]
+rsa = "0.5.0"
+xsalsa20poly1305 = { version = "0.8.0", features = ["heapless"] }
