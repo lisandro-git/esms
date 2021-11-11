@@ -8,3 +8,5 @@ authors = ["edode"]
 rsa = "0.5.0"
 xsalsa20poly1305 = { version = "0.8.0", features = ["heapless"] }
 rand = "0.8.4"
+aes = "0.7.5"
+block-modes = "0.8.1"
