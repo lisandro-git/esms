@@ -67,6 +67,12 @@ fn send_message_to_all_clients(mut clients: Vec<TcpStream>, msg: String) -> Vec<
         }).collect::<Vec<_>>();
     return clients;
 }
+
+fn send_message_to_client(client: &mut TcpStream, msg: &[u8]) {
+    let mut buff = msg.to_vec();
+    buff.resize(MSG_SIZE, 0);
+    client.write_all(&buff).ok();
+}
 /* END communication part */
 
 fn handle_message_received(tx: &Sender<String>, socket: &mut TcpStream, addr: &SocketAddr) -> (bool, Vec<u8>) {
@@ -112,8 +118,19 @@ fn verify_password(client: &TcpStream, iv_and_enc_data: &mut [u8], key: &Vec<u8>
     println!("enc_data : {:?}", enc_data);
     let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
     let decrypted_ciphertext = cipher.decrypt(&mut enc_data);
+    println!("------key_text : {:?}", key);
     println!("decrypted_text : {:?}", decrypted_ciphertext);
-    return true;
+    match decrypted_ciphertext {
+        Err(_) => {
+            println!("err");
+            return false;
+        },
+        Ok(_) => {
+            println!("ok");
+            return true;
+        }
+    }
+
 }
 /* END AES part */
 
@@ -121,24 +138,37 @@ fn main() {
     let server = handle_connection();
     let mut clients = vec![];
     let mut authenticated = false;
-    let mut server_password = b"aaaaaaaaaaaaaaaa".to_vec();
+    let mut auth_passed = false;
     let (tx, rx) = mpsc::channel::<String>();
 
     loop {
         if let Ok((mut socket, addr)) = server.accept() {
 
-            println!("Client {} connected", addr);
+
             let tx = tx.clone();
             clients = add_client(clients, &socket);
-
-            send_first_message(&clients);
+            if authenticated{
+                send_first_message(&clients);
+            }
 
             thread::spawn(move || loop {
                 let mut server_password = b"12345678901234567890123556789011".to_vec();
                 if !&authenticated {
                     let (_, mut buff) = handle_message_received(&tx, &mut socket, &addr);
-                    authenticated = verify_password(&socket, &mut buff[..], &server_password);
-                    continue;
+                    auth_passed = verify_password(&socket, &mut buff[..], &server_password);
+                    if auth_passed {
+                        println!("Client {} connected and successfully authenticated", addr);
+                        authenticated = true;
+                        let mut x = socket.peer_addr().unwrap().to_string().into_bytes();
+                        x.extend_from_slice(b"\nSuccessfully authenticated");
+                        send_message_to_client(&mut socket, &x);
+                        continue;
+                    }
+                    else {
+                        let buff = b"from server :\n\tIncorect password, please try again".to_vec();
+                        send_message_to_client(&mut socket, &buff);
+                        break;
+                    }
                 }
 
                 let (disconnect, msg) = handle_message_received(&tx, &mut socket, &addr);

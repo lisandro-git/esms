@@ -96,7 +96,7 @@ fn encrypt_msg_aes(msg: &Vec<u8>, iv: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
 fn send_password_challenge(server: &mut TcpStream) {
     type Aes128Cbc = Cbc<Aes256, Pkcs7>;
     let mut iv = generate_random_iv();
-    println!("before change iv : {:?}", iv);
+    //println!("before change iv : {:?}", iv);
     let mut server_pass_and_key = String::new();
     println!("Server's password : ");
     io::stdin()
@@ -105,8 +105,8 @@ fn send_password_challenge(server: &mut TcpStream) {
     server_pass_and_key.pop();
     let enc_pass = encrypt_msg_aes(&server_pass_and_key.clone().into_bytes(), &iv, &server_pass_and_key.clone().into_bytes());
     iv.extend(enc_pass.as_slice());
-    println!("iv : {:?}", iv);
-    println!("enc_pass : {:?}", enc_pass);
+    //println!("iv : {:?}", iv);
+    //println!("enc_pass : {:?}", enc_pass);
     send_message(server, iv);
 }
 
