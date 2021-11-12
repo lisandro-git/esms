@@ -10,16 +10,13 @@ use std::thread;
 use aes::Aes256;
 use block_modes::{BlockMode, Cbc};
 use block_modes::block_padding::Pkcs7;
-use rsa::{PaddingScheme, RsaPrivateKey};
-use rsa::pkcs8::FromPrivateKey;
-use xsalsa20poly1305::aead::{AeadInPlace, generic_array::GenericArray, NewAead};
-use xsalsa20poly1305::aead::heapless::Vec as salsa_v;
-use xsalsa20poly1305::aead::rand_core::OsRng;
-use xsalsa20poly1305::XSalsa20Poly1305;
+use rand::RngCore;
+use rand::rngs::OsRng;
 
 const LOCAL: &str = "127.0.0.1:6000";
 const MSG_SIZE: usize = 4096;
 const IV_LEN: usize = 16;
+const PASS: &[u8; 32] = b"12345678901234567890123556789011";
 
 fn sleep() {
     thread::sleep(::std::time::Duration::from_millis(100));
@@ -54,16 +51,13 @@ fn add_client(mut clients: Vec<TcpStream>, new_user: &TcpStream) -> Vec<TcpStrea
     return clients;
 }
 
-fn send_message_to_all_clients(mut clients: Vec<TcpStream>, msg: String) -> Vec<TcpStream>{
+fn send_message_to_all_clients(mut clients: Vec<TcpStream>, msg: &mut Vec<u8>) -> Vec<TcpStream>{
     clients = clients
         .into_iter()
         .filter_map(|mut client| {
             println!("{:?}", client);
-            let mut buff = msg
-                .clone()
-                .into_bytes();
-            buff.resize(MSG_SIZE, 0);
-            client.write_all(&buff).map(|_| client).ok()
+            msg.resize(MSG_SIZE, 0);
+            client.write_all(&msg).map(|_| client).ok()
         }).collect::<Vec<_>>();
     return clients;
 }
@@ -114,12 +108,12 @@ fn get_iv(text: Vec<u8>) -> (Vec<u8>, Vec<u8>){
 fn verify_password(client: &TcpStream, iv_and_enc_data: &mut [u8], key: &Vec<u8>) -> bool{
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
     let (mut iv, mut enc_data) = get_iv(iv_and_enc_data.to_vec());
-    println!("iv : {:?}", iv);
-    println!("enc_data : {:?}", enc_data);
+    //println!("iv : {:?}", iv);
+    //println!("enc_data : {:?}", enc_data);
     let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
     let decrypted_ciphertext = cipher.decrypt(&mut enc_data);
-    println!("------key_text : {:?}", key);
-    println!("decrypted_text : {:?}", decrypted_ciphertext);
+    //println!("------key_text : {:?}", key);
+    //println!("decrypted_text : {:?}", decrypted_ciphertext);
     match decrypted_ciphertext {
         Err(_) => {
             println!("err");
@@ -132,6 +126,22 @@ fn verify_password(client: &TcpStream, iv_and_enc_data: &mut [u8], key: &Vec<u8>
     }
 
 }
+
+
+// 19111999 : send the msg after receiving a new one
+fn generate_random_iv() -> Vec<u8> {
+    let mut iv = [0u8; IV_LEN];
+    OsRng.fill_bytes(&mut iv);
+    return iv.to_vec();
+}
+
+fn encrypt_message(msg: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
+    type Aes256Cbc = Cbc<Aes256, Pkcs7>;
+    let cipher = Aes256Cbc::new_from_slices(&key, &generate_random_iv()).unwrap();
+    let mut buffer = [0u8; MSG_SIZE];
+    buffer[.. msg.len()].copy_from_slice(msg.as_slice());
+    return cipher.clone().encrypt(&mut buffer,  msg.len()).unwrap().to_vec();
+}
 /* END AES part */
 
 fn main() {
@@ -143,8 +153,6 @@ fn main() {
 
     loop {
         if let Ok((mut socket, addr)) = server.accept() {
-
-
             let tx = tx.clone();
             clients = add_client(clients, &socket);
             if authenticated{
@@ -152,12 +160,13 @@ fn main() {
             }
 
             thread::spawn(move || loop {
-                let mut server_password = b"12345678901234567890123556789011".to_vec();
+                let mut server_password = PASS.to_vec();
                 if !&authenticated {
                     let (_, mut buff) = handle_message_received(&tx, &mut socket, &addr);
                     auth_passed = verify_password(&socket, &mut buff[..], &server_password);
                     if auth_passed {
                         println!("Client {} connected and successfully authenticated", addr);
+
                         authenticated = true;
                         let mut x = socket.peer_addr().unwrap().to_string().into_bytes();
                         x.extend_from_slice(b"\nSuccessfully authenticated");
@@ -165,6 +174,7 @@ fn main() {
                         continue;
                     }
                     else {
+                        println!("Client {} connected failed password challenge", addr);
                         let buff = b"from server :\n\tIncorect password, please try again".to_vec();
                         send_message_to_client(&mut socket, &buff);
                         break;
@@ -186,8 +196,9 @@ fn main() {
         }
 
         if let Ok(mut msg) = rx.try_recv() {
-            //msg = encrypt_string(msg);
-            clients = send_message_to_all_clients(clients, msg)
+            let key = PASS;
+            let mut msg = encrypt_message(&msg.into_bytes(), &key.to_vec());
+            clients = send_message_to_all_clients(clients, &mut msg)
         }
         sleep();
     }
