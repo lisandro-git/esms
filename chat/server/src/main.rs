@@ -90,7 +90,7 @@ fn handle_message_received(tx: &Sender<String>, socket: &mut TcpStream, addr: &S
 }
 
 /* AES part */
-fn get_iv(text: Vec<u8>) -> (Vec<u8>, Vec<u8>){
+fn get_iv(text: &Vec<u8>) -> (Vec<u8>, Vec<u8>){
     let mut i:usize = 0;
     let mut iv:Vec<u8> = vec![];
     let mut text_to_encrypt: Vec<u8> = vec![];
@@ -107,7 +107,7 @@ fn get_iv(text: Vec<u8>) -> (Vec<u8>, Vec<u8>){
 
 fn verify_password(client: &TcpStream, iv_and_enc_data: &mut [u8], key: &Vec<u8>) -> bool{
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
-    let (mut iv, mut enc_data) = get_iv(iv_and_enc_data.to_vec());
+    let (mut iv, mut enc_data) = get_iv(&iv_and_enc_data.to_vec());
     //println!("iv : {:?}", iv);
     //println!("enc_data : {:?}", enc_data);
     let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
@@ -127,7 +127,6 @@ fn verify_password(client: &TcpStream, iv_and_enc_data: &mut [u8], key: &Vec<u8>
 
 }
 
-
 // 19111999 : send the msg after receiving a new one
 fn generate_random_iv() -> Vec<u8> {
     let mut iv = [0u8; IV_LEN];
@@ -141,6 +140,16 @@ fn encrypt_message(msg: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
     let mut buffer = [0u8; MSG_SIZE];
     buffer[.. msg.len()].copy_from_slice(msg.as_slice());
     return cipher.clone().encrypt(&mut buffer,  msg.len()).unwrap().to_vec();
+}
+
+fn decrypt_message(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
+    type Aes256Cbc = Cbc<Aes256, Pkcs7>;
+    let (iv, enc_data) = get_iv(&msg);
+    let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
+    let mut buf = msg.to_vec();
+    let decrypted_ciphertext = cipher.decrypt(&mut buf).unwrap();
+    println!("dec_ciph : {:?}", decrypted_ciphertext);
+    return decrypted_ciphertext.to_vec();
 }
 /* END AES part */
 
@@ -185,9 +194,12 @@ fn main() {
 
                 if !disconnect {
                     // edode : if not has not been disconnected, send client's message to all other clients
-                    let msg = String::from_utf8(msg).expect("Invalid utf8 message");
-                    println!("{}: {}", addr, msg);
-                    tx.send(msg).expect("failed to send msg to rx");
+                    println!("msg received : {:?}", msg);
+                    let msg = decrypt_message(msg, &server_password);
+                    let (_, clear_msg) = get_iv(&msg);
+
+                    println!("{}: {:?}", addr, clear_msg);
+                    //tx.send(msg).expect("failed to send msg to rx");
                 }
                 else { break }
 

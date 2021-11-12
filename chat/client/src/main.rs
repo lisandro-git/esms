@@ -13,6 +13,7 @@ use aes::Aes256;
 use block_modes::{BlockMode, Cbc};
 use block_modes::block_padding::Pkcs7;
 use rand::RngCore;
+
 const LOCAL: &str = "127.0.0.1:6000";
 const MSG_SIZE: usize = 4096;
 const IV_LEN: usize = 16;
@@ -44,7 +45,7 @@ fn write_message(tx: &Sender<String>) -> String {
         else { return msg }
 }
 
-fn handle_message_received(client: &mut TcpStream, first_co: &mut bool) -> bool{
+fn handle_message_received(client: &mut TcpStream, first_co: &mut bool, key: &Vec<u8>) -> bool{
     let mut buff = vec![0; MSG_SIZE];
     match client.read_exact(&mut buff) {
         Ok(_) => {
@@ -58,7 +59,8 @@ fn handle_message_received(client: &mut TcpStream, first_co: &mut bool) -> bool{
                 println!("Connected to -> {} | as -> {}", LOCAL, from_utf8(&msg).unwrap()); // edode : receive IP from server
                 *first_co = false;
             } else {
-                // lisandro : add screen clearing (carefull to multi-messages)
+
+                //let msg = decrypt_msg_aes(msg, key);
                 println!("-> {}", from_utf8(&msg).unwrap());
             }
         },
@@ -85,29 +87,66 @@ fn generate_random_iv() -> Vec<u8> {
     return iv.to_vec();
 }
 
-fn encrypt_msg_aes(msg: &Vec<u8>, iv: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
+fn encrypt_msg_aes(msg: Vec<u8>, iv: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
     let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
     let mut buffer = [0u8; MSG_SIZE];
     buffer[..msg.len()].copy_from_slice(msg.as_slice());
     return cipher.clone().encrypt(&mut buffer,  msg.len()).unwrap().to_vec();
 }
-// server: &mut TcpStream
-fn send_password_challenge(server: &mut TcpStream) {
+
+fn get_iv(text: Vec<u8>) -> (Vec<u8>, Vec<u8>){
+    let mut i:usize = 0;
+    let mut iv:Vec<u8> = vec![];
+    let mut text_to_encrypt: Vec<u8> = vec![];
+    for t in text.iter(){
+        if i >= IV_LEN{
+            text_to_encrypt.push(*t);
+        } else {
+            iv.push(*t);
+            i += 1;
+        }
+    }
+    return (iv, text_to_encrypt);
+}
+
+fn decrypt_msg_aes(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
+    type Aes256Cbc = Cbc<Aes256, Pkcs7>;
+    let (iv, mut enc_data) = get_iv(msg);
+    let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
+    let decrypted_ciphertext = cipher.decrypt(&mut enc_data).unwrap();
+    return decrypted_ciphertext.to_vec();
+}
+
+fn encrypt_and_send_message(server: &mut TcpStream, msg: Vec<u8>, key: &Vec<u8>){
     type Aes128Cbc = Cbc<Aes256, Pkcs7>;
     let mut iv = generate_random_iv();
-    //println!("before change iv : {:?}", iv);
+
+    let enc_pass = encrypt_msg_aes(msg, &iv, &key);
+    println!("enc_pass : {:?}", enc_pass);
+    println!("iv : {:?}", iv);
+    iv.extend(enc_pass.as_slice());
+
+    send_message(server, iv);
+    //return server_pass_and_key.into_bytes().to_owned();
+}
+
+fn send_password_challenge(server: &mut TcpStream) -> Vec<u8> {
+    type Aes128Cbc = Cbc<Aes256, Pkcs7>;
+    let mut iv = generate_random_iv();
     let mut server_pass_and_key = String::new();
+
     println!("Server's password : ");
     io::stdin()
         .read_line(&mut server_pass_and_key)
         .expect("Failed to read line");
-    server_pass_and_key.pop();
-    let enc_pass = encrypt_msg_aes(&server_pass_and_key.clone().into_bytes(), &iv, &server_pass_and_key.clone().into_bytes());
+    server_pass_and_key.pop(); // edode : remove the \n at the end of the script
+
+    let enc_pass = encrypt_msg_aes(server_pass_and_key.clone().into_bytes(), &iv, &server_pass_and_key.clone().into_bytes());
     iv.extend(enc_pass.as_slice());
-    //println!("iv : {:?}", iv);
-    //println!("enc_pass : {:?}", enc_pass);
+
     send_message(server, iv);
+    return server_pass_and_key.into_bytes().to_owned();
 }
 
 fn main() {
@@ -115,16 +154,20 @@ fn main() {
     let mut server = handle_connection();
     let mut first_co: bool = true;
     let (tx, rx) = mpsc::channel::<String>();
-    send_password_challenge(&mut server);
+    let key = send_password_challenge(&mut server);
 
     thread::spawn(move ||
         loop {
-            let disconnect = handle_message_received(&mut server, &mut first_co);
+            let disconnect = handle_message_received(&mut server, &mut first_co, &key);
             if disconnect { break }
 
             match rx.try_recv() {
                 Err(TryRecvError::Empty) => ( continue ),
-                Ok(msg) => { send_message(&mut server, Vec::from(msg)) },
+                Ok(msg) => {
+                    println!("message received : {}", msg);
+                    let enc_data = encrypt_and_send_message(&mut server, msg.into_bytes(), &key);
+                    //send_message(&mut server, Vec::from(msg))
+                },
                 Err(TryRecvError::Disconnected) => { break }
             }
 
