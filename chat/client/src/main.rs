@@ -59,8 +59,7 @@ fn handle_message_received(client: &mut TcpStream, first_co: &mut bool, key: &Ve
                 println!("Connected to -> {} | as -> {}", LOCAL, from_utf8(&msg).unwrap()); // edode : receive IP from server
                 *first_co = false;
             } else {
-
-                //let msg = decrypt_msg_aes(msg, key);
+                let msg = decrypt_msg_aes(msg, key);
                 println!("-> {}", from_utf8(&msg).unwrap());
             }
         },
@@ -113,22 +112,19 @@ fn get_iv(text: Vec<u8>) -> (Vec<u8>, Vec<u8>){
 fn decrypt_msg_aes(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
     let (iv, mut enc_data) = get_iv(msg);
-    let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
-    let decrypted_ciphertext = cipher.decrypt(&mut enc_data).unwrap();
+    println!("RECV IV {:?}", iv);
+    let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap(); // 19111999 : use match
+    let decrypted_ciphertext = cipher.decrypt(&mut enc_data).unwrap(); // 19111999 : use match
     return decrypted_ciphertext.to_vec();
 }
 
 fn encrypt_and_send_message(server: &mut TcpStream, msg: Vec<u8>, key: &Vec<u8>){
     type Aes128Cbc = Cbc<Aes256, Pkcs7>;
     let mut iv = generate_random_iv();
-
     let enc_pass = encrypt_msg_aes(msg, &iv, &key);
-    println!("enc_pass : {:?}", enc_pass);
-    println!("iv : {:?}", iv);
-    iv.extend(enc_pass.as_slice());
 
+    iv.extend(enc_pass.as_slice());
     send_message(server, iv);
-    //return server_pass_and_key.into_bytes().to_owned();
 }
 
 fn send_password_challenge(server: &mut TcpStream) -> Vec<u8> {
@@ -148,7 +144,7 @@ fn send_password_challenge(server: &mut TcpStream) -> Vec<u8> {
     send_message(server, iv);
     return server_pass_and_key.into_bytes().to_owned();
 }
-
+// 19111999 : don't send messsage if it is empty
 fn main() {
     //send_password_challenge(&mut server);
     let mut server = handle_connection();

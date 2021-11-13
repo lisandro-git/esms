@@ -12,7 +12,7 @@ use block_modes::{BlockMode, Cbc};
 use block_modes::block_padding::Pkcs7;
 use rand::RngCore;
 use rand::rngs::OsRng;
-
+//jfdzhoydbfmkdjhfpkhjbfds
 const LOCAL: &str = "127.0.0.1:6000";
 const MSG_SIZE: usize = 4096;
 const IV_LEN: usize = 16;
@@ -90,7 +90,7 @@ fn handle_message_received(tx: &Sender<String>, socket: &mut TcpStream, addr: &S
 }
 
 /* AES part */
-fn get_iv(text: &Vec<u8>) -> (Vec<u8>, Vec<u8>){
+fn get_iv(text: Vec<u8>) -> (Vec<u8>, Vec<u8>){
     let mut i:usize = 0;
     let mut iv:Vec<u8> = vec![];
     let mut text_to_encrypt: Vec<u8> = vec![];
@@ -107,24 +107,17 @@ fn get_iv(text: &Vec<u8>) -> (Vec<u8>, Vec<u8>){
 
 fn verify_password(client: &TcpStream, iv_and_enc_data: &mut [u8], key: &Vec<u8>) -> bool{
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
-    let (mut iv, mut enc_data) = get_iv(&iv_and_enc_data.to_vec());
-    //println!("iv : {:?}", iv);
-    //println!("enc_data : {:?}", enc_data);
+    let (mut iv, mut enc_data) = get_iv(iv_and_enc_data.to_vec());
     let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
     let decrypted_ciphertext = cipher.decrypt(&mut enc_data);
-    //println!("------key_text : {:?}", key);
-    //println!("decrypted_text : {:?}", decrypted_ciphertext);
     match decrypted_ciphertext {
         Err(_) => {
-            println!("err");
             return false;
         },
         Ok(_) => {
-            println!("ok");
             return true;
         }
     }
-
 }
 
 // 19111999 : send the msg after receiving a new one
@@ -134,22 +127,56 @@ fn generate_random_iv() -> Vec<u8> {
     return iv.to_vec();
 }
 
+fn add_iv_and_encrypted_msg(iv: Vec<u8>, enc_msg: &Vec<u8>) -> Vec<u8> {
+    let mut res = std::iter::repeat(0).take(MSG_SIZE).collect::<Vec<_>>();
+    let mut msg_len: usize= 0;
+    for i in iv.iter(){
+        res[msg_len] = *i;
+        msg_len+=1;
+    }
+    for i in enc_msg.iter(){
+        if msg_len == MSG_SIZE {
+            break;
+        }
+        res[msg_len] = *i;
+        msg_len+=1;
+    }
+    return res.to_owned();
+}
+
 fn encrypt_message(msg: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
-    let cipher = Aes256Cbc::new_from_slices(&key, &generate_random_iv()).unwrap();
+    let mut iv = generate_random_iv();
+    let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
+    println!("Sent IV {:?}", iv);
     let mut buffer = [0u8; MSG_SIZE];
     buffer[.. msg.len()].copy_from_slice(msg.as_slice());
-    return cipher.clone().encrypt(&mut buffer,  msg.len()).unwrap().to_vec();
+    let enc_data = cipher.encrypt(&mut buffer,  msg.len()).unwrap().to_vec();
+    let x = add_iv_and_encrypted_msg(iv, &enc_data);
+    // 19111999 : only the encrypted text is returned, have to return iv+enc_data
+    return x.to_owned();
 }
 
 fn decrypt_message(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
-    let (iv, enc_data) = get_iv(&msg);
-    let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
+    let (iv, enc_data) = get_iv(msg.clone());
+    let cipher = match Aes256Cbc::new_from_slices(&key, &iv) {
+        Ok(cipher) => cipher,
+        Err(err) => {
+            println!("{}", err);
+            return b"".to_vec();
+        }
+    };
     let mut buf = msg.to_vec();
-    let decrypted_ciphertext = cipher.decrypt(&mut buf).unwrap();
-    println!("dec_ciph : {:?}", decrypted_ciphertext);
-    return decrypted_ciphertext.to_vec();
+
+    let x = match cipher.decrypt(&mut buf) {
+        Ok(decrypted_data) => {
+            return decrypted_data.to_vec();
+        }
+        Err(decrypted_data) => {
+            return b"".to_vec();
+        }
+    };
 }
 /* END AES part */
 
@@ -194,12 +221,18 @@ fn main() {
 
                 if !disconnect {
                     // edode : if not has not been disconnected, send client's message to all other clients
-                    println!("msg received : {:?}", msg);
+                    //println!("msg received : {:?}", msg);
                     let msg = decrypt_message(msg, &server_password);
-                    let (_, clear_msg) = get_iv(&msg);
-
-                    println!("{}: {:?}", addr, clear_msg);
-                    //tx.send(msg).expect("failed to send msg to rx");
+                    let (_, clear_msg) = get_iv(msg);
+                    match from_utf8(clear_msg.as_slice()) {
+                        Ok(str_msg) => {
+                            println!("{}: {:?}", addr, str_msg);
+                            tx.send(str_msg.to_string()).expect("failed to send msg to rx");;
+                        }
+                        Err(_) => {
+                            println!("Could not read clear message");
+                        }
+                    };
                 }
                 else { break }
 
