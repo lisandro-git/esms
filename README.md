@@ -17,7 +17,8 @@ every received messages to all the clients connected and authenticated.
 > Server | Client
 >> - Addressed multiple bugs regarding the encryption/decryption of the messages
 >> - Improved/cleaned the code
-> 
+>> - Server's password : 12345678901234567890123556789011
+
 # 📃 Upcoming
 - UI 
  
