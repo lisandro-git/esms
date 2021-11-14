@@ -11,17 +11,15 @@ It is an end-to-end(s) communication system using a AES256-CBC encryption model.
 (including the password verification part) is encrypted. Every message goes through the server, and the server sends back
 every received messages to all the clients connected and authenticated.
 
-# ✅ Changelog
-> Server
->> - Decryption of the received message
->> - Encryption of the message to be send to the clients
-> 
-> Client
->> - Encryption of the message
->> - Decryption of the other clients message
+# 💻 Technos
+- **AES256-CBC**
 
+# ✅ Changelog
+> Server | Client
+>> - Addressed multiple bugs regarding the encryption/decryption of the messages
+>> - Improved/cleaned the code
+> 
 # 📃 Upcoming
-- Previous commit-related bug 
 - UI 
  
 # 📍 Features

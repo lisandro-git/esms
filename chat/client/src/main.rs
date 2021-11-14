@@ -1,13 +1,10 @@
-use std::io::{self, ErrorKind, Read, Write, prelude::Read as read_file};
+use std::io::{self, ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::sync::mpsc::{self, TryRecvError, Sender, Receiver};
+use std::sync::mpsc::{self, TryRecvError, Sender};
 use std::thread;
 use std::time::Duration;
 use std::str::from_utf8;
-use std::{fs, fs::File};
-use std::ops::Deref;
 use rand::rngs::OsRng;
-use std::io::prelude::Write as w;
 
 use aes::Aes256;
 use block_modes::{BlockMode, Cbc};
@@ -53,17 +50,15 @@ fn handle_message_received(client: &mut TcpStream, first_co: &mut bool, key: &Ve
     let mut buff = vec![0; MSG_SIZE];
     match client.read_exact(&mut buff) {
         Ok(_) => {
-            //println!("In 'ok' handle_message_received");
             let msg =
                 buff
                     .into_iter()
                     .collect::<Vec<_>>();
+            let msg = decrypt_msg_aes(msg, key);
             if *first_co {
-                let msg = decrypt_msg_aes(msg, key);
                 println!("Connected to -> {} | as -> {}", LOCAL, from_utf8(&msg).unwrap()); // edode : receive IP from server
                 *first_co = false;
             } else {
-                let msg = decrypt_msg_aes(msg, key);
                 println!("-> {}", from_utf8(&msg).unwrap());
             }
         },
@@ -83,7 +78,6 @@ fn send_message(server: &mut TcpStream, mut msg: Vec<u8>) {
         .expect("writing to socket failed");
 }
 
-// encryption part
 fn generate_random_iv() -> Vec<u8> {
     let mut iv = [0u8; IV_LEN];
     OsRng.fill_bytes(&mut iv);
@@ -91,8 +85,11 @@ fn generate_random_iv() -> Vec<u8> {
 }
 
 fn add_iv_and_encrypted_msg(iv: Vec<u8>, enc_msg: &Vec<u8>) -> Vec<u8> {
+    // merge the IV and the encrypted message to a single message that will be sent afterward
+
     let total_msg_len = iv.len() + enc_msg.len();
     let mut msg_len: usize= 0;
+    // edode : creating an array of <total_msg_len> containing only zeros
     let mut res = std::iter::repeat(0).take(total_msg_len).collect::<Vec<_>>();
 
     for i in iv.iter(){
@@ -112,35 +109,46 @@ fn add_iv_and_encrypted_msg(iv: Vec<u8>, enc_msg: &Vec<u8>) -> Vec<u8> {
 fn encrypt_message(msg: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
 
-    let mut iv = generate_random_iv();
+    let iv = generate_random_iv();
     let cipher = match Aes256Cbc::new_from_slices(&key, &iv) {
         Ok(cipher) => cipher,
         Err(err) => panic!("{}", err)
     };
     let mut buffer = [0u8; MSG_SIZE];
     buffer[.. msg.len()].copy_from_slice(msg.as_slice());
-    let enc_data = cipher.encrypt(&mut buffer,  msg.len()).unwrap().to_vec(); // lisandro : add match here
 
-    let x = add_iv_and_encrypted_msg(iv, &enc_data);
-    return x.to_owned();
+    let enc_data = match cipher.encrypt(&mut buffer, msg.len()) {
+        Ok(enc_data) => enc_data.to_vec(),
+        Err(err) => {
+            println!("Could not encrypt message : {:?}", err);
+            return b"".to_vec();
+        }
+    };
+    return add_iv_and_encrypted_msg(iv.clone(), &enc_data).to_owned();
 }
 
 fn get_iv(text: Vec<u8>) -> (Vec<u8>, Vec<u8>){
+    // Separate the IV and the Data from the receivec string
+
+    let new_text = remove_trailing_zeros(&mut text.to_owned());
     let mut i:usize = 0;
     let mut iv:Vec<u8> = vec![];
-    let mut text_to_encrypt: Vec<u8> = vec![];
-    for t in text.iter().collect::<Vec<_>>(){
-        if i < IV_LEN {
+    let mut data:Vec<u8> = vec![];
+    for t in new_text.iter(){
+        if i >= IV_LEN{
+            data.push(*t);
+        } else {
             iv.push(*t);
             i += 1;
-        } else if i >= IV_LEN {
-            text_to_encrypt.push(*t);
         }
     }
-    return (iv, text_to_encrypt);
+    return (iv, data);
 }
 
 fn remove_trailing_zeros(data: &mut Vec<u8>) -> Vec<u8> {
+    // Used to remove the zeros at the end of the received encrypted message
+    // but not inside the message (purpose of the 'keep_push' var
+
     let mut transit:Vec<u8> = vec![];
     let mut res:Vec<u8> = vec![];
     let mut keep_push = false;
@@ -148,7 +156,8 @@ fn remove_trailing_zeros(data: &mut Vec<u8>) -> Vec<u8> {
         if *d == 0 && !keep_push{
             continue;
         } else {
-            transit.push(*d)
+            transit.push(*d);
+            keep_push = true;
         }
     }
     for t in transit.iter().rev() {
@@ -173,7 +182,7 @@ fn decrypt_msg_aes(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
             },
             Err(err) => {
                 if i == 1{
-                    println!("{:?}", err);
+                    println!("An error as occured : {:?}", err);
                     return b"".to_vec();
                 }
             }
@@ -184,15 +193,11 @@ fn decrypt_msg_aes(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
 }
 
 fn encrypt_and_send_message(server: &mut TcpStream, msg: Vec<u8>, key: &Vec<u8>){
-    type Aes128Cbc = Cbc<Aes256, Pkcs7>;
     let enc_pass = encrypt_message(&msg,  &key);
-
     send_message(server, enc_pass);
 }
 
 fn send_password_challenge(server: &mut TcpStream) -> Vec<u8> {
-    type Aes128Cbc = Cbc<Aes256, Pkcs7>;
-    let mut iv = generate_random_iv();
     let mut server_pass_and_key = String::new();
 
     println!("Server's password : ");
@@ -206,6 +211,7 @@ fn send_password_challenge(server: &mut TcpStream) -> Vec<u8> {
     send_message(server, enc_pass);
     return server_pass_and_key.into_bytes().to_owned();
 }
+
 fn main() {
     //send_password_challenge(&mut server);
     let mut server = handle_connection();
@@ -221,7 +227,7 @@ fn main() {
             match rx.try_recv() {
                 Err(TryRecvError::Empty) => ( continue ),
                 Ok(msg) => {
-                    println!("message received : {}", msg);
+                    //println!("message received : {}", msg);
                     encrypt_and_send_message(&mut server, msg.into_bytes(), &key);
                 },
                 Err(TryRecvError::Disconnected) => { break }
@@ -231,8 +237,7 @@ fn main() {
     sleep_time(1000);
 
     loop {
-        let buff = write_message(&tx);
-        println!("-> {}", buff)
+        write_message(&tx);
     }
 }
 
