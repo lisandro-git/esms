@@ -18,6 +18,13 @@ const MSG_SIZE: usize = 4096;
 const IV_LEN: usize = 16;
 const PASS: &[u8; 32] = b"12345678901234567890123556789011";
 
+/*
+problems as of now :
+    password checking still fails (check with this zero thing)
+    clients does not receive messages because of the trailing zeros that the server sends
+        -> to remediate this -> find a way to only send the string, and not the trailing zeros
+ */
+
 fn sleep() {
     thread::sleep(::std::time::Duration::from_millis(100));
 }
@@ -39,7 +46,7 @@ fn send_first_message(clients: &Vec<TcpStream>) {
         .unwrap()
         .to_string()
         .into_bytes();
-    buff.resize(MSG_SIZE, 0);
+    //buff.resize(MSG_SIZE, 0);
     client_ip.write_all(&buff).ok();
 }
 
@@ -52,10 +59,9 @@ fn add_client(mut clients: Vec<TcpStream>, new_user: &TcpStream) -> Vec<TcpStrea
 }
 
 fn send_message_to_all_clients(mut clients: Vec<TcpStream>, msg: &mut Vec<u8>) -> Vec<TcpStream>{
-    clients = clients
+    clients = clients // lisandro : send to all clients except the one who send it
         .into_iter()
         .filter_map(|mut client| {
-            println!("{:?}", client);
             msg.resize(MSG_SIZE, 0);
             client.write_all(&msg).map(|_| client).ok()
         }).collect::<Vec<_>>();
@@ -65,6 +71,7 @@ fn send_message_to_all_clients(mut clients: Vec<TcpStream>, msg: &mut Vec<u8>) -
 fn send_message_to_client(client: &mut TcpStream, msg: &[u8]) {
     let mut buff = msg.to_vec();
     buff.resize(MSG_SIZE, 0);
+    println!("sent value : {:?}", buff);
     client.write_all(&buff).ok();
 }
 /* END communication part */
@@ -120,7 +127,6 @@ fn verify_password(client: &TcpStream, iv_and_enc_data: &mut [u8], key: &Vec<u8>
     }
 }
 
-// 19111999 : send the msg after receiving a new one
 fn generate_random_iv() -> Vec<u8> {
     let mut iv = [0u8; IV_LEN];
     OsRng.fill_bytes(&mut iv);
@@ -128,14 +134,16 @@ fn generate_random_iv() -> Vec<u8> {
 }
 
 fn add_iv_and_encrypted_msg(iv: Vec<u8>, enc_msg: &Vec<u8>) -> Vec<u8> {
-    let mut res = std::iter::repeat(0).take(MSG_SIZE).collect::<Vec<_>>();
+    let total_msg_len = iv.len() + enc_msg.len();
     let mut msg_len: usize= 0;
+    let mut res = std::iter::repeat(0).take(total_msg_len).collect::<Vec<_>>();
+
     for i in iv.iter(){
         res[msg_len] = *i;
         msg_len+=1;
     }
     for i in enc_msg.iter(){
-        if msg_len == MSG_SIZE {
+        if msg_len == MSG_SIZE || msg_len == total_msg_len {
             break;
         }
         res[msg_len] = *i;
@@ -146,15 +154,21 @@ fn add_iv_and_encrypted_msg(iv: Vec<u8>, enc_msg: &Vec<u8>) -> Vec<u8> {
 
 fn encrypt_message(msg: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
+
     let mut iv = generate_random_iv();
-    let cipher = Aes256Cbc::new_from_slices(&key, &iv).unwrap();
-    println!("Sent IV {:?}", iv);
+    let cipher = match Aes256Cbc::new_from_slices(&key, &iv) {
+        Ok(cipher) => cipher,
+        Err(err) => panic!("{}", err)
+    };
     let mut buffer = [0u8; MSG_SIZE];
     buffer[.. msg.len()].copy_from_slice(msg.as_slice());
     let enc_data = cipher.encrypt(&mut buffer,  msg.len()).unwrap().to_vec();
-    let x = add_iv_and_encrypted_msg(iv, &enc_data);
-    // 19111999 : only the encrypted text is returned, have to return iv+enc_data
-    return x.to_owned();
+    let data = add_iv_and_encrypted_msg(iv.clone(), &enc_data);
+
+    println!("IV : {:?}", iv);
+    println!("enc_data : {:?}", enc_data);
+
+    return data.to_owned();
 }
 
 fn decrypt_message(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
@@ -169,11 +183,11 @@ fn decrypt_message(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
     };
     let mut buf = msg.to_vec();
 
-    let x = match cipher.decrypt(&mut buf) {
+    match cipher.decrypt(&mut buf) {
         Ok(decrypted_data) => {
             return decrypted_data.to_vec();
         }
-        Err(decrypted_data) => {
+        Err(_) => {
             return b"".to_vec();
         }
     };
@@ -191,28 +205,29 @@ fn main() {
         if let Ok((mut socket, addr)) = server.accept() {
             let tx = tx.clone();
             clients = add_client(clients, &socket);
-            if authenticated{
-                send_first_message(&clients);
-            }
 
             thread::spawn(move || loop {
                 let mut server_password = PASS.to_vec();
                 if !&authenticated {
+                    // edode : receive the first message even though the client is not connected
                     let (_, mut buff) = handle_message_received(&tx, &mut socket, &addr);
                     auth_passed = verify_password(&socket, &mut buff[..], &server_password);
                     if auth_passed {
                         println!("Client {} connected and successfully authenticated", addr);
 
+                        let mut welcome_message = socket.peer_addr().unwrap().to_string().into_bytes();
+                        welcome_message.extend_from_slice(b"\nSuccessfully authenticated");
+
+                        let mut msg = encrypt_message(&welcome_message, &server_password);
+                        send_message_to_client(&mut socket, &msg);
+
                         authenticated = true;
-                        let mut x = socket.peer_addr().unwrap().to_string().into_bytes();
-                        x.extend_from_slice(b"\nSuccessfully authenticated");
-                        send_message_to_client(&mut socket, &x);
                         continue;
                     }
                     else {
                         println!("Client {} connected failed password challenge", addr);
-                        let buff = b"from server :\n\tIncorect password, please try again".to_vec();
-                        send_message_to_client(&mut socket, &buff);
+                        let welcome_message = b"from server :\n\tIncorect password, please try again".to_vec();
+                        send_message_to_client(&mut socket, &welcome_message);
                         break;
                     }
                 }
@@ -220,8 +235,6 @@ fn main() {
                 let (disconnect, msg) = handle_message_received(&tx, &mut socket, &addr);
 
                 if !disconnect {
-                    // edode : if not has not been disconnected, send client's message to all other clients
-                    //println!("msg received : {:?}", msg);
                     let msg = decrypt_message(msg, &server_password);
                     let (_, clear_msg) = get_iv(msg);
                     match from_utf8(clear_msg.as_slice()) {
