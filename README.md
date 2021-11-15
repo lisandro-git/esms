@@ -17,7 +17,13 @@ every received messages to all the clients connected and authenticated.
 > Server
 >> - The server send the message to all but not for the original sended
 
+# 🧪 Miscellaneous
+- Server's password : 12345678901234567890123556789011
+    - Can be changed in "chat/server/main.rs" variable : PASS
+    - Has to be 32 bit long to work
+
 # 📃 Upcoming
+- Code improvement and enhancement of memory management
 - UI 
  
 # 📍 Features
