@@ -1,5 +1,10 @@
 ![built-with-love](img/built-with-love.svg?style=centerme)
 ![works-on-linux](img/works-on-linux.svg?style=centerme)
+<<<<<<< HEAD
+=======
+![gluten-free](img/gluten-free.svg?style=centerme)
+![60-of-the-time-works-every-time](img/60-of-the-time-works-every-time.svg?style=centerme)
+>>>>>>> 34286e2f9e53960f6cf8b37f1ac2cf851e446df8
 ![works-on-my-machine](img/works-on-my-machine.svg?style=centerme)
 ![60-of-the-time-works-every-time](img/60-of-the-time-works-every-time.svg?style=centerme)
 ![gluten-free](img/gluten-free.svg?style=centerme)
@@ -14,6 +19,7 @@ every received messages to all the clients connected and authenticated.
 - **AES256-CBC**
 
 # ✅ Changelog
+<<<<<<< HEAD
 > Server
 >> - The server send the message to all but not for the original sended
 
@@ -21,6 +27,12 @@ every received messages to all the clients connected and authenticated.
 - Server's password : 12345678901234567890123556789011
     - Can be changed in "chat/server/main.rs" variable : PASS
     - Has to be 32 bit long to work
+=======
+> Server | Client
+>> - Addressed multiple bugs regarding the encryption/decryption of the messages
+>> - Improved/cleaned the code
+>> - Server's password : 12345678901234567890123556789011
+>>>>>>> 34286e2f9e53960f6cf8b37f1ac2cf851e446df8
 
 # 📃 Upcoming
 - Code improvement and enhancement of memory management
