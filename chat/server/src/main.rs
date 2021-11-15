@@ -38,16 +38,15 @@ fn add_client(mut clients: Vec<TcpStream>, new_user: &TcpStream) -> Vec<TcpStrea
     return clients;
 }
 
-fn send_message_to_all_clients(mut clients: Vec<TcpStream>, msg: &mut Vec<u8>) -> Vec<TcpStream>{
+fn send_message_to_all_clients(clients: &Vec<TcpStream>, msg: &mut Vec<u8>, cli: String) {
     // Used to send a message to all other clients
 
-    clients = clients // lisandro : send to all clients except the one who send it
-        .into_iter()
-        .filter_map(|mut client| {
+    for mut c in clients{
+        if cli != c.peer_addr().unwrap().to_string() {
             msg.resize(MSG_SIZE, 0);
-            client.write_all(&msg).map(|_| client).ok()
-        }).collect::<Vec<_>>();
-    return clients;
+            c.write_all(&msg).ok();
+        };
+    };
 }
 
 fn send_message_to_client(client: &mut TcpStream, msg: &[u8]) {
@@ -191,7 +190,7 @@ fn main() {
     let mut clients = vec![];
     let mut authenticated = false;
     let (tx, rx) = mpsc::channel::<String>();
-
+    let mut client_and_data = vec![];
     loop {
         if let Ok((mut socket, addr)) = server.accept() {
             let tx = tx.clone();
@@ -225,26 +224,39 @@ fn main() {
                 let (msg , disconnect) = handle_message_received(&mut socket, &addr);
 
                 if !disconnect {
+                    let client_addr = socket.peer_addr().unwrap().to_string();
                     let (msg, _) = decrypt_message(msg, &server_password);
                     match from_utf8(msg.as_slice()) {
                         Ok(str_msg) => {
                             println!("{}: {:?}", addr, str_msg);
-                            tx.send(str_msg.to_string())
-                                .expect("failed to send msg to rx");
+                            let client_and_message = vec![
+                                client_addr,
+                                str_msg.to_string(),
+                            ];
+                            for cm in client_and_message {
+                                tx.send(cm).unwrap();
+                            };
                         }
                         Err(_) => println!("Could not read clear message"),
                     };
-                } else { break }
+                } else { break };
 
                 sleep();
             });
         }
-
         if let Ok(msg) = rx.try_recv() {
-            let key = PASS;
-            let mut msg = encrypt_message(msg.into_bytes(), &key.to_vec());
-            clients = send_message_to_all_clients(clients, &mut msg)
-        }
+            if client_and_data.len() != 2 {
+                client_and_data.push(msg);
+            };
+            if client_and_data.len() == 2 {
+                let c = &client_and_data[0];
+                let d = &client_and_data[1];
+                let key = PASS;
+                let mut msg = encrypt_message((*d.as_bytes().to_vec()).to_owned(), &key.to_vec());
+                send_message_to_all_clients(&clients, &mut msg, (*c.to_owned()).parse().unwrap());
+                client_and_data.clear();
+            };
+        };
         sleep();
     }
 }
