@@ -1,21 +1,27 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::str::from_utf8;
-use std::sync::mpsc;
-use std::thread;
+use std::sync::mpsc::channel;
+use std::thread::{sleep, spawn};
 
 use aes::Aes256;
+
 use block_modes::{BlockMode, Cbc};
 use block_modes::block_padding::Pkcs7;
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::{RngCore, rngs::OsRng};
+
 const LOCAL: &str = "127.0.0.1:6000";
 const MSG_SIZE: usize = 4096;
 const IV_LEN: usize = 16;
 const PASS: &[u8; 32] = b"12345678901234567890123556789011";
 
-fn sleep() {
-    thread::sleep(::std::time::Duration::from_millis(100));
+struct User {
+    ip: String,
+    data: Vec<u8>,
+    authenticated: bool,
+}
+
+fn idle() {
+    sleep(::std::time::Duration::from_millis(100));
 }
 
 fn handle_connection() -> TcpListener{
@@ -32,29 +38,28 @@ fn add_client(mut clients: Vec<TcpStream>, new_user: &TcpStream) -> Vec<TcpStrea
     // add the newly connected client to the array
 
     clients.push(new_user
-            .try_clone()
-            .expect("failed to clone client")
-        );
+        .try_clone()
+        .expect("failed to clone client")
+    );
     return clients;
 }
 
-fn send_message_to_all_clients(clients: &Vec<TcpStream>, msg: &mut Vec<u8>, cli: String) {
+fn send_message_to_all_clients(clients: &Vec<TcpStream>, u: &mut User) {
     // Used to send a message to all other clients
 
     for mut c in clients{
-        if cli != c.peer_addr().unwrap().to_string() {
-            msg.resize(MSG_SIZE, 0);
-            c.write_all(&msg).ok();
+        if u.ip != c.peer_addr().unwrap().to_string() {
+            u.data.resize(MSG_SIZE, 0);
+            c.write_all(&u.data).ok();
         };
     };
 }
 
-fn send_message_to_client(client: &mut TcpStream, msg: &[u8]) {
+fn send_message_to_client(client: &mut TcpStream, u: &mut User) {
     // Used to send to a specific client
 
-    let mut buff = msg.to_vec();
-    buff.resize(MSG_SIZE, 0);
-    client.write_all(&buff).ok();
+    u.data.resize(MSG_SIZE, 0);
+    client.write_all(&u.data).ok();
 }
 
 fn handle_message_received(socket: &mut TcpStream, addr: &SocketAddr) -> (Vec<u8>, bool) {
@@ -189,16 +194,20 @@ fn main() {
     let server = handle_connection();
     let mut clients = vec![];
     let mut authenticated = false;
-    let (tx, rx) = mpsc::channel::<String>();
-    let mut client_and_data = vec![];
+    let (tx, rx) = channel::<User>();
     loop {
         if let Ok((mut socket, addr)) = server.accept() {
             let tx = tx.clone();
             clients = add_client(clients, &socket);
+            spawn(move || loop {
+                let mut u = User{
+                    ip: socket.peer_addr().unwrap().to_string(),
+                    data: vec![],
+                    authenticated,
+                };
 
-            thread::spawn(move || loop {
                 let server_password = PASS.to_vec();
-                if !&authenticated {
+                if !u.authenticated {
                     // edode : receive the first message even though the client is not connected
                     let (data, _) = handle_message_received(&mut socket, &addr);
                     let (_, auth_passed) = decrypt_message(data, &server_password);
@@ -207,16 +216,14 @@ fn main() {
 
                         let mut welcome_message = socket.peer_addr().unwrap().to_string().into_bytes();
                         welcome_message.extend_from_slice(b"\nSuccessfully authenticated");
-
-                        let msg = encrypt_message(welcome_message, &server_password);
-                        send_message_to_client(&mut socket, &msg);
-
+                        u.data = encrypt_message(welcome_message, &server_password);
+                        send_message_to_client(&mut socket, &mut u);
                         authenticated = true;
                         continue;
                     } else {
-                        println!("Client {} connected failed password challenge", addr);
-                        let welcome_message = b"from server :\n\tIncorect password, please try again".to_vec();
-                        send_message_to_client(&mut socket, &welcome_message);
+                        println!("Client {} failed password challenge", addr);
+                        u.data = b"from server :\n\tIncorect password, please try again".to_vec();
+                        send_message_to_client(&mut socket, &mut u);
                         break;
                     }
                 }
@@ -224,40 +231,24 @@ fn main() {
                 let (msg , disconnect) = handle_message_received(&mut socket, &addr);
 
                 if !disconnect {
-                    let client_addr = socket.peer_addr().unwrap().to_string();
                     let (msg, _) = decrypt_message(msg, &server_password);
-                    match from_utf8(msg.as_slice()) {
-                        Ok(str_msg) => {
-                            println!("{}: {:?}", addr, str_msg);
-                            let client_and_message = vec![
-                                client_addr,
-                                str_msg.to_string(),
-                            ];
-                            for cm in client_and_message {
-                                tx.send(cm).unwrap();
-                            };
+                    u.data = msg;
+                    match tx.send(u) {
+                        Ok(_) => {},
+                        Err(err) => {
+                            println!("Error sending message to channel : {:?}", err);
                         }
-                        Err(_) => println!("Could not read clear message"),
-                    };
+                    }
                 } else { break };
 
-                sleep();
+                idle();
             });
         }
-        if let Ok(msg) = rx.try_recv() {
-            if client_and_data.len() != 2 {
-                client_and_data.push(msg);
-            };
-            if client_and_data.len() == 2 {
-                let c = &client_and_data[0];
-                let d = &client_and_data[1];
-                let key = PASS;
-                let mut msg = encrypt_message((*d.as_bytes().to_vec()).to_owned(), &key.to_vec());
-                send_message_to_all_clients(&clients, &mut msg, (*c.to_owned()).parse().unwrap());
-                client_and_data.clear();
-            };
+        if let Ok(mut u) = rx.try_recv() {
+            u.data = encrypt_message(u.data.to_owned(), &PASS.to_vec());
+            send_message_to_all_clients(&clients, &mut u);
         };
-        sleep();
+        idle();
     }
 }
 

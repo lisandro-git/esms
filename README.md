@@ -1,8 +1,8 @@
 ![built-with-love](img/built-with-love.svg?style=centerme)
 ![works-on-linux](img/works-on-linux.svg?style=centerme)
 ![gluten-free](img/gluten-free.svg?style=centerme)
-![60-of-the-time-works-every-time](img/60-of-the-time-works-every-time.svg?style=centerme)
 ![works-on-my-machine](img/works-on-my-machine.svg?style=centerme)
+![60-of-the-time-works-every-time](img/60-of-the-time-works-every-time.svg?style=centerme)
 
 # 🚩Preamble
 This is a pure Rust multi-client encrypted messaging system, also known as Edode's Secured Messaging System.
@@ -15,7 +15,8 @@ every received messages to all the clients connected and authenticated.
 
 # ✅ Changelog
 > Server
->> - The server send the message to all but not for the original sended
+>> - Added User struct
+>> - Enhanced memory management
 
 # 🧪 Miscellaneous
 - Server's password : 12345678901234567890123556789011
