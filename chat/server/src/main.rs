@@ -5,9 +5,15 @@ use std::thread::{sleep, spawn};
 
 use aes::Aes256;
 
-use block_modes::{BlockMode, Cbc};
-use block_modes::block_padding::Pkcs7;
-use rand::{RngCore, rngs::OsRng};
+use block_modes::{
+    BlockMode,
+    Cbc,
+    block_padding::Pkcs7};
+
+use rand::{
+    RngCore,
+    rngs::OsRng
+};
 
 const LOCAL: &str = "127.0.0.1:6000";
 const MSG_SIZE: usize = 4096;
@@ -165,6 +171,7 @@ fn encrypt_message(msg: Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
             return b"".to_vec();
         }
     };
+
     return add_iv_and_encrypted_msg(iv, &enc_data).to_owned();
 }
 
@@ -184,28 +191,30 @@ fn decrypt_message(msg: Vec<u8>, key: &Vec<u8>) -> (Vec<u8>, bool) {
             return (decrypted_data.to_vec(), true);
         }
         Err(err) => {
-            println!("An error as occured : {:?}", err);
+            println!("Could not decrypt message : {:?}", err);
             return (b"".to_vec(), false);
         }
     };
 }
 
 fn main() {
+    println!("Started server, and listening to {}", LOCAL);
     let server = handle_connection();
     let mut clients = vec![];
     let mut authenticated = false;
     let (tx, rx) = channel::<User>();
+
     loop {
         if let Ok((mut socket, addr)) = server.accept() {
             let tx = tx.clone();
             clients = add_client(clients, &socket);
+
             spawn(move || loop {
                 let mut u = User{
                     ip: socket.peer_addr().unwrap().to_string(),
                     data: vec![],
                     authenticated,
                 };
-
                 let server_password = PASS.to_vec();
                 if !u.authenticated {
                     // edode : receive the first message even though the client is not connected

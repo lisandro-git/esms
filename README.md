@@ -15,8 +15,7 @@ every received messages to all the clients connected and authenticated.
 
 # ✅ Changelog
 > Server
->> - Added User struct
->> - Enhanced memory management
+> 
 
 # 🧪 Miscellaneous
 - Server's password : 12345678901234567890123556789011
