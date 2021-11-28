@@ -14,8 +14,9 @@ every received messages to all the clients connected and authenticated.
 - **AES256-CBC**
 
 # ✅ Changelog
-> Server
-> 
+> Server | Client
+>> - Modified message transmission protocol to include the username of the sender
+>> - Improved the username implementation
 
 # 🧪 Miscellaneous
 - Server's password : 12345678901234567890123556789011
