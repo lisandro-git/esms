@@ -1,5 +1,5 @@
 use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc::channel;
 use std::thread::{sleep, spawn};
 
@@ -9,6 +9,9 @@ use block_modes::{BlockMode, Cbc};
 use block_modes::block_padding::Pkcs7;
 use rand::{RngCore, rngs::OsRng};
 
+use bincode::{deserialize, serialize};
+use serde::{Deserialize, Serialize};
+
 const LOCAL: &str = "127.0.0.1:6000";
 const MSG_SIZE: usize = 4096;
 const IV_LEN: usize = 16;
@@ -16,10 +19,54 @@ const PASS: &[u8; 32] = b"12345678901234567890123556789011";
 const USERNAME_LENGTH: usize = 10;
 
 struct User {
-    ip: String,
-    data: Vec<u8>,
-    username: Vec<u8>,
+    sock: TcpStream, // lisandro : make it a simple tcp stream (see lisandro in send_message_to_all_clients() )
     authenticated: bool,
+    connected: bool,
+    MSG: Message,
+}
+impl User {
+    fn new(sock: TcpStream) -> User {
+        User {
+            sock,
+            authenticated: false,
+            connected: false,
+            MSG: Message::new(vec![], vec![]),
+        }
+    }
+    fn delete(&mut self) {
+        self.sock.shutdown(Shutdown::Both).unwrap();
+        self.MSG.delete();
+    }
+    fn clone(&self) -> User {
+        User {
+            sock: self.sock.try_clone().unwrap(),
+            authenticated: self.authenticated,
+            connected: self.connected,
+            MSG: self.MSG.clone(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Message {
+    username: Vec<u8>,
+    data: Vec<u8>,
+}
+
+impl Message {
+    fn new(username: Vec<u8>, data: Vec<u8>) -> Message {
+        Message { username, data }
+    }
+    fn delete(&mut self) {
+        self.username.clear();
+        self.data.clear();
+    }
+    fn clone(&self) -> Message {
+        Message {
+            username: self.username.clone(),
+            data: self.data.clone(),
+        }
+    }
 }
 
 fn idle() {
@@ -46,72 +93,50 @@ fn add_client(mut clients: Vec<TcpStream>, new_user: &TcpStream) -> Vec<TcpStrea
     return clients;
 }
 
-fn send_message_to_all_clients(clients: &Vec<TcpStream>, u: &mut User) {
+fn send_message_to_all_clients(clients: &Vec<TcpStream>, U: &mut User) {
     // Used to send a message to all other clients
 
     for mut c in clients{
-        if u.ip != c.peer_addr().unwrap().to_string() {
-            u.data.resize(MSG_SIZE, 0);
-            c.write_all(&u.data).ok();
-        };
+        if U.sock.peer_addr().unwrap().to_string() != *c.peer_addr().unwrap().to_string() { // lisandro : compare using tcpstream and not string
+            U.MSG.data.resize(MSG_SIZE, 0);
+            c.write_all(&U.MSG.data).ok();
+        } else {
+
+        }
     };
 }
 
-fn send_message_to_client(client: &mut TcpStream, u: &mut User) {
+fn send_message_to_client(U: &mut User) {
     // Used to send to a specific client
 
-    u.data.resize(MSG_SIZE, 0);
-    client.write_all(&u.data).ok();
+    U.MSG.data.resize(MSG_SIZE, 0);
+    U.sock.write_all(&U.MSG.data).ok();
 }
 
-fn handle_message_received(socket: &mut TcpStream, addr: &SocketAddr) -> (Vec<u8>, bool) {
+fn handle_message_received<'a>(mut U: &'a mut User, addr: &'a SocketAddr) -> &'a User  {
     let mut buff = vec![0; MSG_SIZE];
-
-    match socket.read_exact(&mut buff) {
+    match U.sock.read_exact(&mut buff) {
         Ok(_) => {
-            let msg = buff.into_iter().collect::<Vec<_>>();
-            println!("recv mesg from cli : {:?}", msg);
-            return (msg, false);
+            U.MSG.data = buff.into_iter().collect::<Vec<_>>();
+            U.connected = true;
+            return U;
         },
-        Err(ref err) if err.kind() == ErrorKind::WouldBlock => (),
+        Err(ref err) if err.kind() == ErrorKind::WouldBlock => (println!("shit happens")),
         Err(x) => {
-            println!("closing connection with: {}, {}", addr, x);
-            return (buff, true);
-        }
-    }
-    return (buff, true);
+            println!("Client {:?} disconnected : {:?}", addr, x);
+        },
+    };
+    U.connected = false;
+    return U;
 }
 
-fn split_message(text: Vec<u8>) -> (Vec<u8>, Vec<u8>, Vec<u8>){
-    // Separate the IV and the Data from the receivec string
-
-    let text = remove_trailing_zeros(&mut text.to_owned());
-    let mut i:usize = 0;
-    let mut iv:Vec<u8> = vec![];
-    let mut username:Vec<u8> = vec![];
-    let mut data: Vec<u8> = vec![];
-
-    for t in text.iter() {
-        if i < IV_LEN {
-            iv.push(*t);
-        } else if i < IV_LEN + USERNAME_LENGTH {
-            username.push(*t);
-        } else {
-            data.push(*t);
-        }
-        i += 1;
-    }
-
-    return (iv, username, data);
-}
-
-fn remove_trailing_zeros(data: &mut Vec<u8>) -> Vec<u8> {
+fn remove_trailing_zeros(data: Vec<u8>) -> Vec<u8> {
     // Used to remove the zeros at the end of the received encrypted message
     // but not inside the message (purpose of the 'keep_push' var
 
-    let mut transit:Vec<u8> = vec![];
-    let mut res:Vec<u8> = vec![];
-    let mut keep_push = false;
+    let mut transit: Vec<u8> = vec![];
+    let mut res: Vec<u8> = vec![];
+    let mut keep_push: bool = false;
     for d in data.iter().rev() {
         if *d == 0 && !keep_push{
             continue;
@@ -123,6 +148,7 @@ fn remove_trailing_zeros(data: &mut Vec<u8>) -> Vec<u8> {
     for t in transit.iter().rev() {
         res.push(*t);
     }
+    //res.push(0);
     return res.to_owned();
 }
 
@@ -132,138 +158,129 @@ fn generate_random_iv() -> Vec<u8> {
     return iv.to_vec();
 }
 
-fn merge_iv_username_data(iv: Vec<u8>, username: &Vec<u8>, enc_msg: &Vec<u8>) -> Vec<u8> {
-    // merge the IV and the encrypted message to a single message that will be sent afterward
-
-    let total_msg_len = iv.len() + username.len() + enc_msg.len();
-    let mut msg_len: usize= 0;
-    // edode : creating an array of <total_msg_len> containing only zeros
-    let mut res = std::iter::repeat(0).take(total_msg_len).collect::<Vec<_>>();
-
-    for i in iv.iter(){
-        res[msg_len] = *i;
-        msg_len+=1;
-    }
-    for i in username.iter() {
-        res[msg_len] = *i;
-        msg_len+=1;
-    }
-    for i in enc_msg.iter(){
-        if msg_len == MSG_SIZE || msg_len == total_msg_len {
-            break;
-        }
-        res[msg_len] = *i;
-        msg_len+=1;
-    }
-    return res.to_owned();
+fn serialize_data(M: &Message) -> Vec<u8>{
+    return serialize(&M).unwrap();
 }
 
-fn encrypt_message(msg: Vec<u8>, username: &Vec<u8>, key: &Vec<u8>) -> Vec<u8>{
+fn deserialize_data(data: &[u8]) -> Message {
+    return deserialize(data).unwrap()
+}
+
+fn encrypt_message(iv: Vec<u8>, data: &Message, key: &Vec<u8>) -> Vec<u8> {
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
 
-    let iv = generate_random_iv();
     let cipher = match Aes256Cbc::new_from_slices(&key, &iv) {
         Ok(cipher) => cipher,
         Err(err) => panic!("{}", err)
     };
-    let mut buffer = [0u8; MSG_SIZE];
-    buffer[.. msg.len()].copy_from_slice(msg.as_slice());
+    let ser_data = serialize_data(&data);
 
-    let enc_data = match cipher.encrypt(&mut buffer, msg.len()) {
+    let mut buffer = [0u8; MSG_SIZE];
+    buffer[.. ser_data.len()].copy_from_slice(ser_data.as_slice());
+
+    let enc_data = match cipher.encrypt(&mut buffer, ser_data.len()) {
         Ok(enc_data) => enc_data.to_vec(),
         Err(err) => {
-            println!("Could not decrypt message : {:?}", err);
-            return b"".to_vec();
+            println!("Could not encrypt message : {:?}", err);
+            return Vec::new();
         }
     };
-    return merge_iv_username_data(iv, username, &enc_data).to_owned();
+    return enc_data;
 }
 
-fn decrypt_message(msg: Vec<u8>, key: &Vec<u8>) -> (Vec<u8>, Vec<u8>, bool) {
-
+fn decrypt_message<'a>(U: &'a mut User, key: &'a Vec<u8>) -> &'a mut User {
     type Aes256Cbc = Cbc<Aes256, Pkcs7>;
-    let (iv, mut username, mut enc_data) = split_message(msg.clone());
+    // print data
+    println!("decrypting data : {:?}", U.MSG.data);
+    let iv = &U.MSG.data[0..IV_LEN];
+    let data = &U.MSG.data[IV_LEN..];
 
-    let cipher = match Aes256Cbc::new_from_slices(&key, &iv) {
+    let cipher = match Aes256Cbc::new_from_slices(&key, iv) {
         Ok(cipher) => cipher,
-        Err(err) => {
-            println!("decrypt err : {}", err);
-            return (b"".to_vec(), b"NaN".to_vec(), false)
-        }
+        Err(err) => panic!("{}", err)
     };
-    //username = remove_trailing_zeros(&mut username);
-    match cipher.decrypt(&mut enc_data) {
+
+    let mut enc_data = remove_trailing_zeros(remove_trailing_zeros(data.to_vec()));
+    U.MSG.delete();
+    match cipher.clone().decrypt(&mut enc_data) {
         Ok(decrypted_data) => {
-            return (decrypted_data.to_vec(), username.to_owned(), true);
-        }
+            U.MSG = deserialize_data(decrypted_data);
+            return U;
+        },
         Err(err) => {
-            println!("An error as occured : {:?}", err);
-            return (b"".to_vec(), username.to_owned(), false);
-        }
+            println!("An error as occured during the decryption : {:?}", err);
+        },
     };
+    U.authenticated = false;
+    return U;
+}
+
+fn handle_authentication<'a>(U: &'a mut User, addr: &'a SocketAddr, server_password: &Vec<u8>) -> &'a mut User {
+    if !U.authenticated {
+        handle_message_received(U, &addr);
+        // edode : receive the first message even though the client is not connected
+        decrypt_message(U, &server_password);
+        if U.connected {
+            let iv = generate_random_iv();
+            let mut welcome_message = U.sock.peer_addr().unwrap().to_string().into_bytes();
+            println!("Client {}({:?}) connected and successfully authenticated", addr, U.MSG.username);
+
+            welcome_message.extend_from_slice(b"\nSuccessfully authenticated");
+            U.MSG.data = welcome_message;
+            U.authenticated = true;
+            encrypt_message(iv, &U.MSG, &server_password);
+        } else {
+            println!("Client {} failed password challenge", addr);
+            U.MSG.data = b"from server :\n\tIncorect password, please try again".to_vec();
+        }
+        send_message_to_client(U);
+    }
+    return U;
 }
 
 fn main() {
     let server = handle_connection();
     let mut clients = vec![];
-    let mut authenticated = false;
     let (tx, rx) = channel::<User>();
+
     loop {
         if let Ok((mut socket, addr)) = server.accept() {
+
+            let mut U = User::new(socket.try_clone().unwrap());
             let tx = tx.clone();
             clients = add_client(clients, &socket);
             spawn(move || loop {
-                let mut u = User{ // lisandro : initializing the user struct outside the loop
-                    ip: socket.peer_addr().unwrap().to_string(),
-                    data: vec![],
-                    username: b"".to_vec(),
-                    authenticated,
+                let server_password = PASS.to_vec();
+
+                if !U.authenticated {
+                    handle_authentication(&mut U, &addr, &server_password);
+                    continue;
                 };
 
-                let server_password = PASS.to_vec();
-                if !u.authenticated {
-                    // edode : receive the first message even though the client is not connected
-                    let (data, _) = handle_message_received(&mut socket, &addr);
-                    let (_, username, auth_passed) = decrypt_message(data, &server_password);
-                    if auth_passed {
-                        println!("Client {}({:?}) connected and successfully authenticated", addr, username);
+                handle_message_received(&mut U, &addr);
 
-                        let mut welcome_message = socket.peer_addr().unwrap().to_string().into_bytes();
-                        welcome_message.extend_from_slice(b"\nSuccessfully authenticated");
-                        u.data = encrypt_message(welcome_message, &username, &server_password);
-                        send_message_to_client(&mut socket, &mut u);
-                        authenticated = true;
-                        continue;
-                    } else {
-                        println!("Client {} failed password challenge", addr);
-                        u.data = b"from server :\n\tIncorect password, please try again".to_vec();
-                        send_message_to_client(&mut socket, &mut u);
-                        break;
-                    }
-                }
-
-                let (msg , disconnect) = handle_message_received(&mut socket, &addr);
-
-                if !disconnect {
-                    let (msg, username, _) = decrypt_message(msg, &server_password);
-                    u.data = msg;
-                    u.username = username;
-                    match tx.send(u) {
+                if U.connected {
+                    decrypt_message(&mut U, &server_password);
+                    match tx.send(U.clone()) {
                         Ok(_) => {},
                         Err(err) => {
                             println!("Error sending message to channel : {:?}", err);
                         }
-                    }
-                } else { break };
-
+                    };
+                } else {
+                    println!("Client {:?} disconnected", U.sock);
+                    break;
+                };
                 idle();
             });
-        }
-        if let Ok(mut u) = rx.try_recv() {
-            u.data = encrypt_message(u.data.to_owned(), &u.username, &PASS.to_vec());
-            println!("sent data : {:?}", u.data);
-            send_message_to_all_clients(&clients, &mut u);
         };
+
+        if let Ok(mut U) = rx.try_recv() {
+            let iv = generate_random_iv();
+            U.MSG.data = encrypt_message(iv, &U.MSG, &PASS.to_vec());
+            send_message_to_all_clients(&clients, &mut U);
+        };
+
         idle();
     }
 }
